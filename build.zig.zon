@@ -1,0 +1,8 @@
+.{
+    .name = .mir_wayland,
+    .fingerprint = 0x1887f570b657e617,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{ "src", "build.zig", "build.zig.zon" },
+    .dependencies = .{},
+}
