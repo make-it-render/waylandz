@@ -9,12 +9,15 @@ const wire = @import("wire.zig");
 pub const Shape = enum(u32) {
     default = 1,
     pointer = 4,
+    wait = 6,
     crosshair = 8,
     text = 9,
     move = 13,
     not_allowed = 15,
     ew_resize = 26,
     ns_resize = 27,
+    nesw_resize = 28,
+    nwse_resize = 29,
 };
 
 pub const manager = struct {

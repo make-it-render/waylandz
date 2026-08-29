@@ -65,7 +65,11 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) !@This() {
         .allocator = temp_arena.allocator(),
         .scanner = .{ .text = text },
     };
-    try builder.parseKeymap();
+    builder.parseKeymap() catch |err| {
+        const pos = @min(builder.scanner.pos, text.len);
+        log.warn("keymap parse failed at byte {d}, near: \"{s}\"", .{ pos, text[pos -| 60..@min(text.len, pos + 40)] });
+        return err;
+    };
     try builder.build(&self);
     return self;
 }
@@ -115,6 +119,9 @@ const Builder = struct {
     keycodes: std.StringHashMapUnmanaged(u32) = .empty,
     aliases: std.StringHashMapUnmanaged([]const u8) = .empty,
     vmods: std.ArrayList([]const u8) = .empty,
+    /// Mappings declared inline (`Hyper=0x4000`, `Alt=Mod1`), by name: the
+    /// real bits bind directly, bits 8+ name other virtual modifiers.
+    vmod_mappings: std.StringHashMapUnmanaged(SymbolicMask) = .empty,
     raw_types: std.ArrayList(RawType) = .empty,
     interprets: std.ArrayList(Interpret) = .empty,
     raw_keys: std.ArrayList(RawKey) = .empty,
@@ -244,7 +251,27 @@ const Builder = struct {
             if (self.vmodIndex(name) == null) {
                 try self.vmods.append(self.allocator, name);
             }
-            const token = try self.scanner.next();
+            var token = try self.scanner.next();
+            if (token == .punct and token.punct == '=') {
+                // libxkbcommon 1.8+ writes the mapping inline: a mask in hex
+                // (bit n+8 is virtual modifier n) or a `+` expression of names.
+                var mapping: SymbolicMask = 0;
+                token = try self.scanner.next();
+                while (true) {
+                    switch (token) {
+                        .number => |value| mapping |= value,
+                        .ident => |modifier| mapping |= try self.modifierBit(modifier),
+                        .punct => |char| switch (char) {
+                            '+' => {},
+                            ',', ';' => break,
+                            else => return error.MalformedKeymap,
+                        },
+                        else => return error.MalformedKeymap,
+                    }
+                    token = try self.scanner.next();
+                }
+                try self.vmod_mappings.put(self.allocator, name, mapping);
+            }
             switch (token) {
                 .punct => |char| switch (char) {
                     ',' => continue,
@@ -363,8 +390,12 @@ const Builder = struct {
             }
             return;
         }
-        const sym_name = try self.scanner.nextIdent();
-        const sym = keysyms.fromName(sym_name) orelse 0;
+        // Newer dumps write a keysym without a name as a hex number.
+        const sym: u32 = switch (try self.scanner.next()) {
+            .ident => |name| keysyms.fromName(name) orelse 0,
+            .number => |value| value,
+            else => return error.MalformedKeymap,
+        };
 
         // Skip the optional +Predicate(args) part of the header.
         while (!try self.scanner.peekIsPunct('{')) {
@@ -597,6 +628,10 @@ const Builder = struct {
         // carrying its keysym name the real modifier through modifier_map.
         const vmod_real = try self.allocator.alloc(u8, self.vmods.items.len);
         @memset(vmod_real, 0);
+        for (self.vmods.items, vmod_real) |name, *real| {
+            const mapping = self.vmod_mappings.get(name) orelse continue;
+            real.* = @truncate(mapping);
+        }
         for (self.interprets.items) |interpret| {
             for (self.raw_keys.items) |raw_key| {
                 const real = self.modmap.get(self.resolveAlias(raw_key.name)) orelse
@@ -609,6 +644,7 @@ const Builder = struct {
                 vmod_real[interpret.vmod_index] |= real;
             }
         }
+        self.foldVirtualReferences(vmod_real);
 
         keymap.min_keycode = self.min_keycode;
         keymap.max_keycode = self.max_keycode;
@@ -664,6 +700,32 @@ const Builder = struct {
                 };
             }
             keymap.keys[keycode - self.min_keycode] = .{ .groups = groups };
+        }
+    }
+
+    /// A mapping may name other virtual modifiers (bits 8+); merge their real
+    /// bits until nothing changes. A modifier mapped to itself adds nothing.
+    fn foldVirtualReferences(self: *Builder, vmod_real: []u8) void {
+        var changed = true;
+        var rounds: usize = 0;
+        while (changed and rounds < vmod_real.len) : (rounds += 1) {
+            changed = false;
+            for (self.vmods.items, 0..) |name, index| {
+                const mapping = self.vmod_mappings.get(name) orelse continue;
+                var bits = mapping >> 8;
+                var other: usize = 0;
+                while (bits != 0) : ({
+                    bits >>= 1;
+                    other += 1;
+                }) {
+                    if (bits & 1 == 0 or other == index or other >= vmod_real.len) continue;
+                    const merged = vmod_real[index] | vmod_real[other];
+                    if (merged != vmod_real[index]) {
+                        vmod_real[index] = merged;
+                        changed = true;
+                    }
+                }
+            }
         }
     }
 
@@ -958,6 +1020,17 @@ const Scanner = struct {
 
 const kwin_us = @embedFile("testdata/kwin-us.xkb");
 const kwin_us_fr = @embedFile("testdata/kwin-us-fr.xkb");
+const kwin_us_2026 = @embedFile("testdata/kwin-us-2026.xkb");
+
+test "parses the keymap a 2026 kwin serializes" {
+    var keymap = try parse(testing.allocator, kwin_us_2026);
+    defer keymap.deinit();
+
+    try testing.expectEqual(@as(u32, 'a'), keymap.keysym(38, 0, 0));
+    try testing.expectEqual(@as(u32, 'A'), keymap.keysym(38, mask_shift, 0));
+    try testing.expectEqual(@as(u32, '!'), keymap.keysym(10, mask_shift, 0));
+    try testing.expectEqual(@as(u32, 0xFF0D), keymap.keysym(36, 0, 0));
+}
 
 test "parses a real kwin keymap: alphabetic and two-level keys" {
     var keymap = try parse(testing.allocator, kwin_us);
@@ -1039,3 +1112,4 @@ const std = @import("std");
 const testing = std.testing;
 const Keymap = @This();
 const keysyms = @import("keysym.zig");
+const log = std.log.scoped(.xkb);

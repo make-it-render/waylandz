@@ -65,6 +65,9 @@ pub const Event = union(enum) {
     keyboard_leave: struct { serial: u32, surface: u32 },
     keyboard_key: struct { serial: u32, time: u32, key: u32, state: u32 },
     keyboard_modifiers: struct { depressed: u32, latched: u32, locked: u32, group: u32 },
+    /// Auto-repeat settings: `rate` keys per second (0 disables repeat) after
+    /// `delay` milliseconds of holding. wl_keyboard version 4 and up.
+    keyboard_repeat_info: struct { rate: i32, delay: i32 },
     surface_enter: struct { surface: u32, output: u32 },
     surface_preferred_buffer_scale: struct { surface: u32, factor: i32 },
     fractional_scale_preferred: struct { fractional_scale: u32, scale120: u32 },
@@ -177,7 +180,8 @@ pub fn parse(interface: Interface, opcode: u16, object_id: u32, body: []const u8
                     .group = try args.uint(),
                 } };
             },
-            else => {}, // repeat_info
+            5 => return .{ .keyboard_repeat_info = .{ .rate = try args.int(), .delay = try args.int() } },
+            else => {},
         },
         .output => switch (opcode) {
             3 => return .{ .output_scale = .{ .output = object_id, .factor = try args.int() } },
