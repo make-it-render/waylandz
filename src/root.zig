@@ -28,6 +28,7 @@ pub const proto = struct {
     pub const fractional_scale = @import("protocol/fractional_scale.zig");
     pub const pointer_constraints = @import("protocol/pointer_constraints.zig");
     pub const toplevel_icon = @import("protocol/toplevel_icon.zig");
+    pub const data_device = @import("protocol/data_device.zig");
 };
 
 pub const Interface = @import("protocol/event.zig").Interface;
@@ -53,6 +54,7 @@ test {
     _ = proto.fractional_scale;
     _ = proto.pointer_constraints;
     _ = proto.toplevel_icon;
+    _ = proto.data_device;
     _ = @import("protocol/event.zig");
     _ = xkb.Keymap;
     _ = xkb.keysym;

@@ -27,6 +27,12 @@ pub fn free(self: *@This(), allocator: std.mem.Allocator, id: u32) void {
     self.free_list.append(allocator, id) catch {};
 }
 
+/// Whether `id` is in the client's range, as opposed to one the server
+/// created (wl_data_offer) and hands out from 0xff000000 up.
+pub fn isClientId(id: u32) bool {
+    return id >= first_client_id and id <= max_client_id;
+}
+
 pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
     self.free_list.deinit(allocator);
 }
@@ -38,6 +44,13 @@ test "allocates sequentially from 2" {
     try testing.expectEqual(@as(u32, 2), try ids.alloc());
     try testing.expectEqual(@as(u32, 3), try ids.alloc());
     try testing.expectEqual(@as(u32, 4), try ids.alloc());
+}
+
+test "server ids fall outside the client range" {
+    try testing.expect(isClientId(2));
+    try testing.expect(isClientId(0xfeff_ffff));
+    try testing.expect(!isClientId(display_id));
+    try testing.expect(!isClientId(0xff00_0000));
 }
 
 test "freed ids are recycled" {

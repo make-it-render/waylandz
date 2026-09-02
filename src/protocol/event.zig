@@ -39,6 +39,11 @@ pub const Interface = enum {
     locked_pointer,
     icon_manager,
     icon,
+    data_device_manager,
+    data_device,
+    data_source,
+    /// Server-created: announced by `data_offer_new`, never allocated by us.
+    data_offer,
 };
 
 /// One decoded server event. String slices borrow the connection's read
@@ -84,6 +89,18 @@ pub const Event = union(enum) {
     },
     toplevel_close: u32,
     decoration_configure: struct { decoration: u32, mode: u32 },
+    /// A new wl_data_offer, created by the server; its `data_offer_mime`
+    /// events follow, then a `data_device_selection` names it (or not).
+    data_offer_new: struct { device: u32, offer: u32 },
+    data_offer_mime: struct { offer: u32, mime: []const u8 },
+    /// The seat's selection changed; `offer` is 0 when it is now empty.
+    data_device_selection: struct { device: u32, offer: u32 },
+    /// A receiver wants our source's data as `mime`, written to `fd` and
+    /// closed. The fd travels out of band like the keymap's; the receiver
+    /// owns it.
+    data_source_send: struct { source: u32, mime: []const u8, fd: std.posix.fd_t = -1 },
+    /// The source is no longer the selection; destroy it.
+    data_source_cancelled: u32,
 };
 
 /// Decode one message body. Returns null for events that carry nothing we
@@ -232,9 +249,24 @@ pub fn parse(interface: Interface, opcode: u16, object_id: u32, body: []const u8
             0 => return .{ .fractional_scale_preferred = .{ .fractional_scale = object_id, .scale120 = try args.uint() } },
             else => {},
         },
+        .data_device => switch (opcode) {
+            0 => return .{ .data_offer_new = .{ .device = object_id, .offer = try args.uint() } },
+            5 => return .{ .data_device_selection = .{ .device = object_id, .offer = try args.uint() } },
+            else => {}, // enter, leave, motion, drop: drag and drop
+        },
+        .data_source => switch (opcode) {
+            1 => return .{ .data_source_send = .{ .source = object_id, .mime = try args.string() } },
+            2 => return .{ .data_source_cancelled = object_id },
+            else => {}, // target, dnd_drop_performed, dnd_finished, action: drag and drop
+        },
+        .data_offer => switch (opcode) {
+            0 => return .{ .data_offer_mime = .{ .offer = object_id, .mime = try args.string() } },
+            else => {}, // source_actions, action: drag and drop
+        },
         // Interfaces with no events (or none we act on: the pointer stays
         // usable whether or not a constraint is active, and icon_size/done
         // are advisory).
+        .data_device_manager,
         .compositor,
         .region,
         .shm_pool,
@@ -305,6 +337,41 @@ test "parses surface enter and preferred_buffer_scale" {
     try wire.writeInt(&writer2, 2);
     const preferred = (try parse(.surface, 2, 3, buffer[0..writer2.end])).?;
     try std.testing.expectEqual(@as(i32, 2), preferred.surface_preferred_buffer_scale.factor);
+}
+
+test "parses the data-device selection events" {
+    var buffer: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try wire.writeUint(&writer, 0xff000002);
+    const new_offer = (try parse(.data_device, 0, 9, buffer[0..writer.end])).?;
+    try std.testing.expectEqual(@as(u32, 9), new_offer.data_offer_new.device);
+    try std.testing.expectEqual(@as(u32, 0xff000002), new_offer.data_offer_new.offer);
+
+    var writer2 = std.Io.Writer.fixed(&buffer);
+    try wire.writeString(&writer2, "text/plain;charset=utf-8");
+    const mime = (try parse(.data_offer, 0, 0xff000002, buffer[0..writer2.end])).?;
+    try std.testing.expectEqualStrings("text/plain;charset=utf-8", mime.data_offer_mime.mime);
+
+    var writer3 = std.Io.Writer.fixed(&buffer);
+    try wire.writeUint(&writer3, 0); // selection cleared
+    const selection = (try parse(.data_device, 5, 9, buffer[0..writer3.end])).?;
+    try std.testing.expectEqual(@as(u32, 0), selection.data_device_selection.offer);
+
+    // Drag-and-drop traffic on the same objects is skipped, not misread.
+    try std.testing.expectEqual(@as(?Event, null), try parse(.data_device, 2, 9, &[0]u8{}));
+}
+
+test "parses data_source send with a placeholder fd and cancelled" {
+    var buffer: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try wire.writeString(&writer, "UTF8_STRING");
+    const send = (try parse(.data_source, 1, 13, buffer[0..writer.end])).?;
+    try std.testing.expectEqual(@as(u32, 13), send.data_source_send.source);
+    try std.testing.expectEqualStrings("UTF8_STRING", send.data_source_send.mime);
+    try std.testing.expectEqual(@as(std.posix.fd_t, -1), send.data_source_send.fd);
+
+    const cancelled = (try parse(.data_source, 2, 13, &[0]u8{})).?;
+    try std.testing.expectEqual(@as(u32, 13), cancelled.data_source_cancelled);
 }
 
 test "parses fractional preferred_scale as 120ths" {

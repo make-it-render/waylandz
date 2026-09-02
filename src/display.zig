@@ -107,9 +107,19 @@ pub fn newId(self: *@This(), interface: Interface) !u32 {
     return id;
 }
 
+/// Drop a server-created object (a wl_data_offer) from the map after sending
+/// its destroy request. The server acknowledges only client ids with
+/// delete_id, so nothing else would ever remove it; its id is not recycled
+/// since it was never ours to allocate.
+pub fn forgetServerObject(self: *@This(), id: u32) void {
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
+    _ = self.objects.remove(id);
+}
+
 /// Send one fully-encoded message with an fd attached as SCM_RIGHTS
-/// (wl_shm.create_pool). Flushes buffered requests first so wire order is
-/// preserved.
+/// (wl_shm.create_pool, wl_data_offer.receive). Flushes buffered requests
+/// first so wire order is preserved.
 pub fn sendWithFd(self: *@This(), bytes: []const u8, fd: std.posix.fd_t) !void {
     self.mutex.lockUncancelable(self.io);
     defer self.mutex.unlock(self.io);
@@ -173,6 +183,10 @@ pub fn roundtrip(self: *@This(), io: std.Io) !void {
                 _ = std.os.linux.close(keymap.fd);
                 log.debug("roundtrip dropping keymap event (fd closed)", .{});
             },
+            .data_source_send => |send| {
+                _ = std.os.linux.close(send.fd);
+                log.debug("roundtrip dropping data_source send (fd closed)", .{});
+            },
             else => log.debug("roundtrip dropping event: {s}", .{@tagName(event)}),
         }
     }
@@ -213,6 +227,17 @@ pub fn receive(self: *@This(), io: std.Io) !?Event {
             if (self.pending_fds.items.len == 0) return error.MissingFileDescriptor;
             keymap.fd = self.pending_fds.orderedRemove(0);
         },
+        .data_source_send => |*send| {
+            if (self.pending_fds.items.len == 0) return error.MissingFileDescriptor;
+            send.fd = self.pending_fds.orderedRemove(0);
+        },
+        // The one object the server creates for us. Register it now: its
+        // own events (the mime types it offers) are already on their way.
+        .data_offer_new => |new| {
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
+            try self.objects.put(self.allocator, new.offer, .data_offer);
+        },
         else => {},
     }
 
@@ -225,7 +250,9 @@ pub fn receive(self: *@This(), io: std.Io) !?Event {
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);
             _ = self.objects.remove(id);
-            self.ids.free(self.allocator, id);
+            // Only our own ids go back to the allocator; the server's range
+            // never came from it.
+            if (ObjectIds.isClientId(id)) self.ids.free(self.allocator, id);
             return null;
         },
         .registry_global => |global| {
