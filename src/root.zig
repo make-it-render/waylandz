@@ -29,6 +29,7 @@ pub const proto = struct {
     pub const pointer_constraints = @import("protocol/pointer_constraints.zig");
     pub const toplevel_icon = @import("protocol/toplevel_icon.zig");
     pub const data_device = @import("protocol/data_device.zig");
+    pub const primary_selection = @import("protocol/primary_selection.zig");
 };
 
 pub const Interface = @import("protocol/event.zig").Interface;
@@ -55,6 +56,7 @@ test {
     _ = proto.pointer_constraints;
     _ = proto.toplevel_icon;
     _ = proto.data_device;
+    _ = proto.primary_selection;
     _ = @import("protocol/event.zig");
     _ = xkb.Keymap;
     _ = xkb.keysym;

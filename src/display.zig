@@ -187,6 +187,10 @@ pub fn roundtrip(self: *@This(), io: std.Io) !void {
                 _ = std.os.linux.close(send.fd);
                 log.debug("roundtrip dropping data_source send (fd closed)", .{});
             },
+            .primary_source_send => |send| {
+                _ = std.os.linux.close(send.fd);
+                log.debug("roundtrip dropping primary_selection_source send (fd closed)", .{});
+            },
             else => log.debug("roundtrip dropping event: {s}", .{@tagName(event)}),
         }
     }
@@ -231,12 +235,21 @@ pub fn receive(self: *@This(), io: std.Io) !?Event {
             if (self.pending_fds.items.len == 0) return error.MissingFileDescriptor;
             send.fd = self.pending_fds.orderedRemove(0);
         },
-        // The one object the server creates for us. Register it now: its
-        // own events (the mime types it offers) are already on their way.
+        .primary_source_send => |*send| {
+            if (self.pending_fds.items.len == 0) return error.MissingFileDescriptor;
+            send.fd = self.pending_fds.orderedRemove(0);
+        },
+        // The objects the server creates for us. Register them now: their
+        // own events (the mime types they offer) are already on their way.
         .data_offer_new => |new| {
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);
             try self.objects.put(self.allocator, new.offer, .data_offer);
+        },
+        .primary_offer_new => |new| {
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
+            try self.objects.put(self.allocator, new.offer, .primary_selection_offer);
         },
         else => {},
     }

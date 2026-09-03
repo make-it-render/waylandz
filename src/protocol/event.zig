@@ -44,6 +44,11 @@ pub const Interface = enum {
     data_source,
     /// Server-created: announced by `data_offer_new`, never allocated by us.
     data_offer,
+    primary_selection_device_manager,
+    primary_selection_device,
+    primary_selection_source,
+    /// Server-created: announced by `primary_offer_new`, never allocated by us.
+    primary_selection_offer,
 };
 
 /// One decoded server event. String slices borrow the connection's read
@@ -101,6 +106,13 @@ pub const Event = union(enum) {
     data_source_send: struct { source: u32, mime: []const u8, fd: std.posix.fd_t = -1 },
     /// The source is no longer the selection; destroy it.
     data_source_cancelled: u32,
+    /// The primary-selection counterparts of the five events above, from the
+    /// zwp_primary_selection objects; same contracts, same fd handling.
+    primary_offer_new: struct { device: u32, offer: u32 },
+    primary_offer_mime: struct { offer: u32, mime: []const u8 },
+    primary_device_selection: struct { device: u32, offer: u32 },
+    primary_source_send: struct { source: u32, mime: []const u8, fd: std.posix.fd_t = -1 },
+    primary_source_cancelled: u32,
 };
 
 /// Decode one message body. Returns null for events that carry nothing we
@@ -263,10 +275,25 @@ pub fn parse(interface: Interface, opcode: u16, object_id: u32, body: []const u8
             0 => return .{ .data_offer_mime = .{ .offer = object_id, .mime = try args.string() } },
             else => {}, // source_actions, action: drag and drop
         },
+        .primary_selection_device => switch (opcode) {
+            0 => return .{ .primary_offer_new = .{ .device = object_id, .offer = try args.uint() } },
+            1 => return .{ .primary_device_selection = .{ .device = object_id, .offer = try args.uint() } },
+            else => {},
+        },
+        .primary_selection_source => switch (opcode) {
+            0 => return .{ .primary_source_send = .{ .source = object_id, .mime = try args.string() } },
+            1 => return .{ .primary_source_cancelled = object_id },
+            else => {},
+        },
+        .primary_selection_offer => switch (opcode) {
+            0 => return .{ .primary_offer_mime = .{ .offer = object_id, .mime = try args.string() } },
+            else => {},
+        },
         // Interfaces with no events (or none we act on: the pointer stays
         // usable whether or not a constraint is active, and icon_size/done
         // are advisory).
         .data_device_manager,
+        .primary_selection_device_manager,
         .compositor,
         .region,
         .shm_pool,
@@ -372,6 +399,34 @@ test "parses data_source send with a placeholder fd and cancelled" {
 
     const cancelled = (try parse(.data_source, 2, 13, &[0]u8{})).?;
     try std.testing.expectEqual(@as(u32, 13), cancelled.data_source_cancelled);
+}
+
+test "parses the primary-selection events at their shifted opcodes" {
+    var buffer: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try wire.writeUint(&writer, 0xff000004);
+    const new_offer = (try parse(.primary_selection_device, 0, 21, buffer[0..writer.end])).?;
+    try std.testing.expectEqual(@as(u32, 21), new_offer.primary_offer_new.device);
+    try std.testing.expectEqual(@as(u32, 0xff000004), new_offer.primary_offer_new.offer);
+
+    const selection = (try parse(.primary_selection_device, 1, 21, buffer[0..writer.end])).?;
+    try std.testing.expectEqual(@as(u32, 0xff000004), selection.primary_device_selection.offer);
+
+    var writer2 = std.Io.Writer.fixed(&buffer);
+    try wire.writeString(&writer2, "text/plain");
+    const mime = (try parse(.primary_selection_offer, 0, 0xff000004, buffer[0..writer2.end])).?;
+    try std.testing.expectEqualStrings("text/plain", mime.primary_offer_mime.mime);
+
+    const send = (try parse(.primary_selection_source, 0, 22, buffer[0..writer2.end])).?;
+    try std.testing.expectEqual(@as(u32, 22), send.primary_source_send.source);
+    try std.testing.expectEqualStrings("text/plain", send.primary_source_send.mime);
+    try std.testing.expectEqual(@as(std.posix.fd_t, -1), send.primary_source_send.fd);
+
+    const cancelled = (try parse(.primary_selection_source, 1, 22, &[0]u8{})).?;
+    try std.testing.expectEqual(@as(u32, 22), cancelled.primary_source_cancelled);
+
+    // The manager has no events; anything on it is skipped, not misread.
+    try std.testing.expectEqual(@as(?Event, null), try parse(.primary_selection_device_manager, 0, 18, &[0]u8{}));
 }
 
 test "parses fractional preferred_scale as 120ths" {
