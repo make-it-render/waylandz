@@ -104,8 +104,32 @@ pub const Event = union(enum) {
     /// closed. The fd travels out of band like the keymap's; the receiver
     /// owns it.
     data_source_send: struct { source: u32, mime: []const u8, fd: std.posix.fd_t = -1 },
-    /// The source is no longer the selection; destroy it.
+    /// The source is no longer the selection, or the drag it fed was
+    /// cancelled or refused; destroy it.
     data_source_cancelled: u32,
+    /// A drag came over `surface` at `x`, `y` (surface-local), carrying
+    /// `offer` (0 for a drag with no data). The offer was announced with
+    /// `data_offer_new` and its mime types just before.
+    data_device_enter: struct { device: u32, serial: u32, surface: u32, x: wire.Fixed, y: wire.Fixed, offer: u32 },
+    /// The drag left the surface, or the session ended; destroy the offer.
+    data_device_leave: u32,
+    data_device_motion: struct { device: u32, time: u32, x: wire.Fixed, y: wire.Fixed },
+    /// The user released over the surface. `receive` still works on the
+    /// offer, and on version 3 the transfer ends with `finish`.
+    data_device_drop: u32,
+    /// The target accepted `mime` from our drag source, or nothing (empty).
+    data_source_target: struct { source: u32, mime: []const u8 },
+    /// The user dropped our source; whether the target takes it is still
+    /// open (`finished` or `cancelled` follows). Version 3.
+    data_source_drop_performed: u32,
+    /// The target is done with our source: destroy it. Version 3.
+    data_source_finished: u32,
+    /// The action the compositor settled on for our source. Version 3.
+    data_source_action: struct { source: u32, action: u32 },
+    /// The `dnd_action` bits the drag source allows. Version 3.
+    data_offer_source_actions: struct { offer: u32, actions: u32 },
+    /// The action the compositor settled on for this offer. Version 3.
+    data_offer_action: struct { offer: u32, action: u32 },
     /// The primary-selection counterparts of the five events above, from the
     /// zwp_primary_selection objects; same contracts, same fd handling.
     primary_offer_new: struct { device: u32, offer: u32 },
@@ -263,17 +287,39 @@ pub fn parse(interface: Interface, opcode: u16, object_id: u32, body: []const u8
         },
         .data_device => switch (opcode) {
             0 => return .{ .data_offer_new = .{ .device = object_id, .offer = try args.uint() } },
+            1 => return .{ .data_device_enter = .{
+                .device = object_id,
+                .serial = try args.uint(),
+                .surface = try args.uint(),
+                .x = try args.fixed(),
+                .y = try args.fixed(),
+                .offer = try args.uint(),
+            } },
+            2 => return .{ .data_device_leave = object_id },
+            3 => return .{ .data_device_motion = .{
+                .device = object_id,
+                .time = try args.uint(),
+                .x = try args.fixed(),
+                .y = try args.fixed(),
+            } },
+            4 => return .{ .data_device_drop = object_id },
             5 => return .{ .data_device_selection = .{ .device = object_id, .offer = try args.uint() } },
-            else => {}, // enter, leave, motion, drop: drag and drop
+            else => {},
         },
         .data_source => switch (opcode) {
+            0 => return .{ .data_source_target = .{ .source = object_id, .mime = try args.string() } },
             1 => return .{ .data_source_send = .{ .source = object_id, .mime = try args.string() } },
             2 => return .{ .data_source_cancelled = object_id },
-            else => {}, // target, dnd_drop_performed, dnd_finished, action: drag and drop
+            3 => return .{ .data_source_drop_performed = object_id },
+            4 => return .{ .data_source_finished = object_id },
+            5 => return .{ .data_source_action = .{ .source = object_id, .action = try args.uint() } },
+            else => {},
         },
         .data_offer => switch (opcode) {
             0 => return .{ .data_offer_mime = .{ .offer = object_id, .mime = try args.string() } },
-            else => {}, // source_actions, action: drag and drop
+            1 => return .{ .data_offer_source_actions = .{ .offer = object_id, .actions = try args.uint() } },
+            2 => return .{ .data_offer_action = .{ .offer = object_id, .action = try args.uint() } },
+            else => {},
         },
         .primary_selection_device => switch (opcode) {
             0 => return .{ .primary_offer_new = .{ .device = object_id, .offer = try args.uint() } },
@@ -384,8 +430,85 @@ test "parses the data-device selection events" {
     const selection = (try parse(.data_device, 5, 9, buffer[0..writer3.end])).?;
     try std.testing.expectEqual(@as(u32, 0), selection.data_device_selection.offer);
 
-    // Drag-and-drop traffic on the same objects is skipped, not misread.
-    try std.testing.expectEqual(@as(?Event, null), try parse(.data_device, 2, 9, &[0]u8{}));
+    // Drag-and-drop traffic on the same objects decodes too.
+    const leave = (try parse(.data_device, 2, 9, &[0]u8{})).?;
+    try std.testing.expectEqual(@as(u32, 9), leave.data_device_leave);
+}
+
+test "parses the data-device drag events" {
+    var buffer: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try wire.writeUint(&writer, 77); // serial
+    try wire.writeUint(&writer, 3); // surface
+    try wire.writeUint(&writer, @bitCast(@as(i32, 10 * 256))); // x 10.0
+    try wire.writeUint(&writer, @bitCast(@as(i32, 20 * 256 + 128))); // y 20.5
+    try wire.writeUint(&writer, 0xff000002); // offer
+    const enter = (try parse(.data_device, 1, 9, buffer[0..writer.end])).?;
+    try std.testing.expectEqual(@as(u32, 9), enter.data_device_enter.device);
+    try std.testing.expectEqual(@as(u32, 77), enter.data_device_enter.serial);
+    try std.testing.expectEqual(@as(u32, 3), enter.data_device_enter.surface);
+    try std.testing.expectEqual(@as(wire.Fixed, 10 * 256), enter.data_device_enter.x);
+    try std.testing.expectEqual(@as(wire.Fixed, 20 * 256 + 128), enter.data_device_enter.y);
+    try std.testing.expectEqual(@as(u32, 0xff000002), enter.data_device_enter.offer);
+
+    // A drag with no data enters with a null offer.
+    var writer2 = std.Io.Writer.fixed(&buffer);
+    try wire.writeUint(&writer2, 78);
+    try wire.writeUint(&writer2, 3);
+    try wire.writeUint(&writer2, 0);
+    try wire.writeUint(&writer2, 0);
+    try wire.writeUint(&writer2, 0);
+    const bare = (try parse(.data_device, 1, 9, buffer[0..writer2.end])).?;
+    try std.testing.expectEqual(@as(u32, 0), bare.data_device_enter.offer);
+
+    var writer3 = std.Io.Writer.fixed(&buffer);
+    try wire.writeUint(&writer3, 1234); // time
+    try wire.writeUint(&writer3, @bitCast(@as(i32, 5 * 256)));
+    try wire.writeUint(&writer3, @bitCast(@as(i32, 6 * 256)));
+    const motion = (try parse(.data_device, 3, 9, buffer[0..writer3.end])).?;
+    try std.testing.expectEqual(@as(u32, 1234), motion.data_device_motion.time);
+    try std.testing.expectEqual(@as(wire.Fixed, 5 * 256), motion.data_device_motion.x);
+    try std.testing.expectEqual(@as(wire.Fixed, 6 * 256), motion.data_device_motion.y);
+
+    const drop = (try parse(.data_device, 4, 9, &[0]u8{})).?;
+    try std.testing.expectEqual(@as(u32, 9), drop.data_device_drop);
+}
+
+test "parses the drag-source and drag-offer events" {
+    var buffer: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try wire.writeString(&writer, "text/uri-list");
+    const target = (try parse(.data_source, 0, 13, buffer[0..writer.end])).?;
+    try std.testing.expectEqual(@as(u32, 13), target.data_source_target.source);
+    try std.testing.expectEqualStrings("text/uri-list", target.data_source_target.mime);
+
+    // The target accepting nothing is a null mime, which reads as empty.
+    var writer2 = std.Io.Writer.fixed(&buffer);
+    try wire.writeUint(&writer2, 0);
+    const refused = (try parse(.data_source, 0, 13, buffer[0..writer2.end])).?;
+    try std.testing.expectEqualStrings("", refused.data_source_target.mime);
+
+    const performed = (try parse(.data_source, 3, 13, &[0]u8{})).?;
+    try std.testing.expectEqual(@as(u32, 13), performed.data_source_drop_performed);
+    const finished = (try parse(.data_source, 4, 13, &[0]u8{})).?;
+    try std.testing.expectEqual(@as(u32, 13), finished.data_source_finished);
+
+    var writer3 = std.Io.Writer.fixed(&buffer);
+    try wire.writeUint(&writer3, 1);
+    const action = (try parse(.data_source, 5, 13, buffer[0..writer3.end])).?;
+    try std.testing.expectEqual(@as(u32, 13), action.data_source_action.source);
+    try std.testing.expectEqual(@as(u32, 1), action.data_source_action.action);
+
+    var writer4 = std.Io.Writer.fixed(&buffer);
+    try wire.writeUint(&writer4, 3);
+    const source_actions = (try parse(.data_offer, 1, 0xff000002, buffer[0..writer4.end])).?;
+    try std.testing.expectEqual(@as(u32, 0xff000002), source_actions.data_offer_source_actions.offer);
+    try std.testing.expectEqual(@as(u32, 3), source_actions.data_offer_source_actions.actions);
+
+    var writer5 = std.Io.Writer.fixed(&buffer);
+    try wire.writeUint(&writer5, 2);
+    const offer_action = (try parse(.data_offer, 2, 0xff000002, buffer[0..writer5.end])).?;
+    try std.testing.expectEqual(@as(u32, 2), offer_action.data_offer_action.action);
 }
 
 test "parses data_source send with a placeholder fd and cancelled" {
