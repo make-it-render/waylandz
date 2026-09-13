@@ -5,7 +5,7 @@ fd: std.posix.fd_t,
 data: []align(std.heap.page_size_min) u8,
 
 pub fn init(size: usize) !@This() {
-    const fd = try std.posix.memfd_create("mir-wayland-shm", std.posix.MFD.CLOEXEC);
+    const fd = try std.posix.memfd_create("waylandz-shm", std.posix.MFD.CLOEXEC);
     errdefer _ = linux.close(fd);
 
     switch (linux.errno(linux.ftruncate(fd, @intCast(size)))) {

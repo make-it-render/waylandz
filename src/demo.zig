@@ -34,8 +34,8 @@ pub fn main(init: std.process.Init) !void {
         try proto.wayland.compositor.createSurface(writer, compositor, surface);
         try proto.xdg_shell.wm_base.getXdgSurface(writer, wm_base, xdg_surface, surface);
         try proto.xdg_shell.xdg_surface.getToplevel(writer, xdg_surface, toplevel);
-        try proto.xdg_shell.toplevel.setTitle(writer, toplevel, "mir-wayland demo");
-        try proto.xdg_shell.toplevel.setAppId(writer, toplevel, "mir-wayland-demo");
+        try proto.xdg_shell.toplevel.setTitle(writer, toplevel, "waylandz demo");
+        try proto.xdg_shell.toplevel.setAppId(writer, toplevel, "waylandz-demo");
     }
     if (decoration_manager != 0) {
         const decoration = try display.newId(.toplevel_decoration);

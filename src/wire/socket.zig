@@ -1,6 +1,6 @@
 //! Unix-socket transport: connect to the Wayland display socket and send
 //! messages with SCM_RIGHTS file-descriptor passing. Protocol-neutral — this
-//! layer moves bytes and fds, nothing else (also intended for mir-pipewire).
+//! layer moves bytes and fds, nothing else (also intended for pipewirez).
 
 const std = @import("std");
 
@@ -143,7 +143,7 @@ test "sendWithFd passes a file descriptor over a socketpair" {
     defer _ = linux.close(pair[0]);
     defer _ = linux.close(pair[1]);
 
-    const memfd = try std.posix.memfd_create("mir-wayland-test", std.posix.MFD.CLOEXEC);
+    const memfd = try std.posix.memfd_create("waylandz-test", std.posix.MFD.CLOEXEC);
     defer _ = linux.close(memfd);
 
     try sendWithFd(pair[0], "hello", memfd);

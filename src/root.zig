@@ -2,17 +2,17 @@
 //! libwayland, no libxkbcommon. Two layers:
 //!
 //!  - `wire/*`: protocol-neutral transport (socket + SCM_RIGHTS fd passing,
-//!    shared memory, object ids) — also the foundation for mir-pipewire.
+//!    shared memory, object ids) — also the foundation for pipewirez.
 //!  - `protocol/*` + `Display`: the Wayland display protocol itself.
 
 comptime {
-    if (builtin.os.tag != .linux) @compileError("mir-wayland only supports Linux");
+    if (builtin.os.tag != .linux) @compileError("waylandz only supports Linux");
 }
 
 /// Connected client: registry, globals, request writer, event dispatch.
 pub const Display = @import("display.zig");
 
-// Wire core — protocol-neutral, shared with mir-pipewire.
+// Wire core — protocol-neutral, shared with pipewirez.
 pub const socket = @import("wire/socket.zig");
 pub const SharedMemory = @import("wire/shm.zig");
 pub const ObjectIds = @import("wire/object.zig");
